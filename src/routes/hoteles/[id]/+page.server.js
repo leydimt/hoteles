@@ -45,5 +45,53 @@ export async function load({ params, cookies }) {
     throw error(404, 'Hotel no encontrado o no disponible.');
   }
 
-  return { hotel };
+  // Obtener los comentarios de este hotel.
+  const { data: comentariosBase, error: errorComentarios } = await supabase
+    .from('comentarios')
+    .select('id, comentario, calificacion, creado_en, usuario_id')
+    .eq('hotel_id', hotel.id)
+    .order('creado_en', { ascending: false });
+
+  if (errorComentarios) {
+    console.error('Error al consultar comentarios:', errorComentarios.message);
+    throw error(500, 'No se pudieron cargar los comentarios.');
+  }
+
+  // Buscar los nombres de los autores en la tabla perfiles.
+  const idsUsuarios = [
+    ...new Set((comentariosBase ?? []).map((item) => item.usuario_id))
+  ];
+
+  let perfiles = [];
+
+  if (idsUsuarios.length > 0) {
+    const { data: datosPerfiles, error: errorPerfiles } = await supabase
+      .from('perfiles')
+      .select('id, nombre_usuario')
+      .in('id', idsUsuarios);
+
+    if (errorPerfiles) {
+      console.error('Error al consultar perfiles:', errorPerfiles.message);
+      throw error(500, 'No se pudieron cargar los autores de los comentarios.');
+    }
+
+    perfiles = datosPerfiles ?? [];
+  }
+
+  const comentarios = (comentariosBase ?? []).map((item) => ({
+    ...item,
+    nombre_usuario:
+      perfiles.find((perfil) => perfil.id === item.usuario_id)?.nombre_usuario
+      ?? 'Usuario'
+  }));
+
+  const {
+    data: { user }
+  } = await supabase.auth.getUser();
+
+  return {
+    hotel,
+    comentarios,
+    usuarioActual: user?.id ?? null
+  };
 }

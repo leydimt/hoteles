@@ -6,7 +6,7 @@ import {
   PUBLIC_SUPABASE_PUBLISHABLE_KEY
 } from '$app/env/public';
 
-// Crear un cliente de Supabase usando la sesión del usuario.
+// Crear cliente Supabase usando la sesión del usuario.
 function crearClienteSupabase(cookies) {
   return createServerClient(
     PUBLIC_SUPABASE_URL,
@@ -29,7 +29,7 @@ function crearClienteSupabase(cookies) {
   );
 }
 
-// Verificar que el usuario tenga una sesión y sea administrador.
+// Verificar sesión y permisos de administrador.
 async function verificarAdministrador(supabase) {
   const {
     data: { user },
@@ -72,35 +72,8 @@ async function verificarAdministrador(supabase) {
   return { user };
 }
 
-// GET: comprobar que la ruta funciona.
-export function GET() {
-  return json({
-    mensaje: 'La ruta /api/hoteles funciona correctamente.'
-  });
-}
-
-// POST: registrar un hotel como borrador.
-export async function POST({ request, cookies }) {
-  const supabase = crearClienteSupabase(cookies);
-
-  const { user, error: errorPermiso } =
-    await verificarAdministrador(supabase);
-
-  if (errorPermiso) {
-    return errorPermiso;
-  }
-
-  let datos;
-
-  try {
-    datos = await request.json();
-  } catch {
-    return json(
-      { error: 'Los datos enviados no son válidos.' },
-      { status: 400 }
-    );
-  }
-
+// Validar los datos de un hotel.
+function validarDatos(datos) {
   const nombre = typeof datos.nombre === 'string'
     ? datos.nombre.trim()
     : '';
@@ -121,13 +94,10 @@ export async function POST({ request, cookies }) {
     ? datos.imagen_url.trim()
     : '';
 
-  const precio = datos.precio_desde;
-
   if (!nombre || !direccion || !ciudad) {
-    return json(
-      { error: 'Completa el nombre, la dirección y la ciudad.' },
-      { status: 400 }
-    );
+    return {
+      error: 'Completa el nombre, la dirección y la ciudad.'
+    };
   }
 
   if (
@@ -137,72 +107,110 @@ export async function POST({ request, cookies }) {
     ciudad.length > 100 ||
     imagenUrl.length > 2048
   ) {
-    return json(
-      { error: 'Uno o más campos superan la longitud permitida.' },
-      { status: 400 }
-    );
+    return {
+      error: 'Uno o más campos superan la longitud permitida.'
+    };
   }
 
   if (imagenUrl) {
-    let imagenValida = false;
-
     try {
       const url = new URL(imagenUrl);
-      imagenValida = ['http:', 'https:'].includes(url.protocol);
-    } catch {
-      imagenValida = false;
-    }
 
-    if (!imagenValida) {
-      return json(
-        { error: 'La imagen debe tener una URL HTTP o HTTPS válida.' },
-        { status: 400 }
-      );
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        return {
+          error: 'La URL de la imagen no es válida.'
+        };
+      }
+    } catch {
+      return {
+        error: 'La URL de la imagen no es válida.'
+      };
     }
   }
 
   let precioDesde = null;
 
-  if (precio !== '' && precio !== null && precio !== undefined) {
-    precioDesde = Number(precio);
+  if (
+    datos.precio_desde !== '' &&
+    datos.precio_desde !== null &&
+    datos.precio_desde !== undefined
+  ) {
+    precioDesde = Number(datos.precio_desde);
 
     if (
       !Number.isFinite(precioDesde) ||
       precioDesde < 0 ||
       precioDesde > 99999999
     ) {
-      return json(
-        { error: 'Ingresa un precio válido y no negativo.' },
-        { status: 400 }
-      );
+      return {
+        error: 'Ingresa un precio válido y no negativo.'
+      };
     }
   }
 
-  const { data: hotel, error: errorInsertar } = await supabase
-    .from('hoteles')
-    .insert({
-      propietario_id: user.id,
+  return {
+    valores: {
       nombre,
       descripcion: descripcion || null,
       direccion,
       ciudad,
       imagen_url: imagenUrl || null,
-      precio_desde: precioDesde,
+      precio_desde: precioDesde
+    }
+  };
+}
+
+// GET: comprobar que la ruta funciona.
+export function GET() {
+  return json({
+    mensaje: 'La ruta /api/hoteles funciona correctamente.'
+  });
+}
+
+// POST: registrar un hotel como borrador.
+export async function POST({ request, cookies }) {
+  const supabase = crearClienteSupabase(cookies);
+
+  const { user, error: errorPermiso } =
+    await verificarAdministrador(supabase);
+
+  if (errorPermiso) return errorPermiso;
+
+  let datos;
+
+  try {
+    datos = await request.json();
+  } catch {
+    return json(
+      { error: 'Los datos enviados no son válidos.' },
+      { status: 400 }
+    );
+  }
+
+  const validacion = validarDatos(datos);
+
+  if (validacion.error) {
+    return json(
+      { error: validacion.error },
+      { status: 400 }
+    );
+  }
+
+  const { data: hotel, error } = await supabase
+    .from('hoteles')
+    .insert({
+      propietario_id: user.id,
+      ...validacion.valores,
       esta_publicado: false
     })
-    .select(
-      'id, nombre, descripcion, direccion, ciudad, imagen_url, precio_desde, esta_publicado, creado_en'
-    )
+    .select('*')
     .single();
 
-  if (errorInsertar) {
-    console.error(
-      'Error al registrar hotel:',
-      errorInsertar.message
-    );
+  if (error) {
+    console.error('Error al registrar hotel:', error.message);
 
     return json(
-      { error: 'No se pudo guardar el hotel. Verifica los permisos de Supabase.' },
+      { error: 'No se pudo guardar el hotel.' },
       { status: 400 }
     );
   }
@@ -216,16 +224,14 @@ export async function POST({ request, cookies }) {
   );
 }
 
-// PATCH: publicar o retirar la publicación de un hotel.
+// PATCH: publicar o retirar publicación.
 export async function PATCH({ request, cookies }) {
   const supabase = crearClienteSupabase(cookies);
 
   const { error: errorPermiso } =
     await verificarAdministrador(supabase);
 
-  if (errorPermiso) {
-    return errorPermiso;
-  }
+  if (errorPermiso) return errorPermiso;
 
   let datos;
 
@@ -248,7 +254,7 @@ export async function PATCH({ request, cookies }) {
     );
   }
 
-  const { data: hotel, error: errorActualizar } = await supabase
+  const { data: hotel, error } = await supabase
     .from('hoteles')
     .update({
       esta_publicado: datos.esta_publicado
@@ -257,11 +263,8 @@ export async function PATCH({ request, cookies }) {
     .select('id, nombre, esta_publicado')
     .maybeSingle();
 
-  if (errorActualizar) {
-    console.error(
-      'Error al actualizar hotel:',
-      errorActualizar.message
-    );
+  if (error) {
+    console.error('Error al publicar hotel:', error.message);
 
     return json(
       { error: 'No se pudo actualizar el hotel.' },
@@ -271,7 +274,7 @@ export async function PATCH({ request, cookies }) {
 
   if (!hotel) {
     return json(
-      { error: 'No se encontró el hotel o no tienes permiso para actualizarlo.' },
+      { error: 'No se encontró el hotel.' },
       { status: 404 }
     );
   }
@@ -280,6 +283,127 @@ export async function PATCH({ request, cookies }) {
     mensaje: hotel.esta_publicado
       ? 'Hotel publicado correctamente.'
       : 'Publicación retirada correctamente.',
+    hotel
+  });
+}
+
+// PUT: editar un hotel.
+export async function PUT({ request, cookies }) {
+  const supabase = crearClienteSupabase(cookies);
+
+  const { error: errorPermiso } =
+    await verificarAdministrador(supabase);
+
+  if (errorPermiso) return errorPermiso;
+
+  let datos;
+
+  try {
+    datos = await request.json();
+  } catch {
+    return json(
+      { error: 'Los datos enviados no son válidos.' },
+      { status: 400 }
+    );
+  }
+
+  if (typeof datos.id !== 'string' || !datos.id.trim()) {
+    return json(
+      { error: 'Falta el identificador del hotel.' },
+      { status: 400 }
+    );
+  }
+
+  const validacion = validarDatos(datos);
+
+  if (validacion.error) {
+    return json(
+      { error: validacion.error },
+      { status: 400 }
+    );
+  }
+
+  const { data: hotel, error } = await supabase
+    .from('hoteles')
+    .update(validacion.valores)
+    .eq('id', datos.id)
+    .select('*')
+    .maybeSingle();
+
+  if (error) {
+    console.error('Error al editar hotel:', error.message);
+
+    return json(
+      { error: 'No se pudo editar el hotel.' },
+      { status: 400 }
+    );
+  }
+
+  if (!hotel) {
+    return json(
+      { error: 'No se encontró el hotel.' },
+      { status: 404 }
+    );
+  }
+
+  return json({
+    mensaje: 'Hotel actualizado correctamente.',
+    hotel
+  });
+}
+
+// DELETE: eliminar un hotel.
+export async function DELETE({ request, cookies }) {
+  const supabase = crearClienteSupabase(cookies);
+
+  const { error: errorPermiso } =
+    await verificarAdministrador(supabase);
+
+  if (errorPermiso) return errorPermiso;
+
+  let datos;
+
+  try {
+    datos = await request.json();
+  } catch {
+    return json(
+      { error: 'Los datos enviados no son válidos.' },
+      { status: 400 }
+    );
+  }
+
+  if (typeof datos.id !== 'string' || !datos.id.trim()) {
+    return json(
+      { error: 'Falta el identificador del hotel.' },
+      { status: 400 }
+    );
+  }
+
+  const { data: hotel, error } = await supabase
+    .from('hoteles')
+    .delete()
+    .eq('id', datos.id)
+    .select('id, nombre')
+    .maybeSingle();
+
+  if (error) {
+    console.error('Error al eliminar hotel:', error.message);
+
+    return json(
+      { error: 'No se pudo eliminar el hotel.' },
+      { status: 400 }
+    );
+  }
+
+  if (!hotel) {
+    return json(
+      { error: 'No se encontró el hotel.' },
+      { status: 404 }
+    );
+  }
+
+  return json({
+    mensaje: 'Hotel eliminado correctamente.',
     hotel
   });
 }

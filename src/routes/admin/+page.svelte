@@ -8,11 +8,23 @@
   let { data } = $props();
 
 let hoteles = $state([]);
+let busquedaHotel = $state('');
+let hotelesFiltrados = $derived(
+  hoteles.filter((hotel) => {
+    const busqueda = busquedaHotel.trim().toLowerCase();
 
+    return (
+      hotel.nombre?.toLowerCase().includes(busqueda) ||
+      hotel.ciudad?.toLowerCase().includes(busqueda) ||
+      hotel.direccion?.toLowerCase().includes(busqueda)
+    );
+  })
+);
 $effect(() => {
   hoteles = data.hoteles ?? [];
 });
   let actualizandoId = $state('');
+  let eliminandoId = $state('');
 
   let cerrandoSesion = $state(false);
   let guardando = $state(false);
@@ -27,6 +39,7 @@ $effect(() => {
   let archivoImagen = $state(null);
   let vistaPrevia = $state('');
   let precio_desde = $state('');
+
   
   async function cambiarPublicacion(hotel) {
   actualizandoId = hotel.id;
@@ -196,6 +209,198 @@ event.currentTarget.reset();
     guardando = false;
   }
 }
+
+async function eliminarHotel(hotel) {
+  const confirmar = confirm(
+    `¿Estás seguro de que deseas eliminar el hotel "${hotel.nombre}"? Esta acción no se puede deshacer.`
+  );
+
+  if (!confirmar) return;
+
+  eliminandoId = hotel.id;
+  mensajeError = '';
+  mensajeExito = '';
+
+  try {
+    const respuesta = await fetch('/api/hoteles', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        id: hotel.id
+      })
+    });
+
+    const resultado = await respuesta.json();
+
+    if (!respuesta.ok) {
+      throw new Error(
+        resultado.error || 'No se pudo eliminar el hotel.'
+      );
+    }
+
+    hoteles = hoteles.filter(
+      (item) => item.id !== hotel.id
+    );
+
+    mensajeExito = 'Hotel eliminado correctamente.';
+
+  } catch (error) {
+    console.error('Error al eliminar hotel:', error);
+    mensajeError = error.message || 'No se pudo eliminar el hotel.';
+  } finally {
+    eliminandoId = '';
+  }
+}
+
+
+// Estado para editar hoteles
+let editandoId = $state('');
+let guardandoEdicion = $state(false);
+
+let nombreEdicion = $state('');
+let descripcionEdicion = $state('');
+let direccionEdicion = $state('');
+let ciudadEdicion = $state('');
+let imagenEdicion = $state('');
+let precioEdicion = $state('');
+
+let archivoEdicion = $state(null);
+let vistaPreviaEdicion = $state('');
+
+function abrirEdicion(hotel) {
+  editandoId = hotel.id;
+  nombreEdicion = hotel.nombre ?? '';
+  descripcionEdicion = hotel.descripcion ?? '';
+  direccionEdicion = hotel.direccion ?? '';
+  ciudadEdicion = hotel.ciudad ?? '';
+  imagenEdicion = hotel.imagen_url ?? '';
+  precioEdicion = hotel.precio_desde ?? '';
+
+  archivoEdicion = null;
+  vistaPreviaEdicion = hotel.imagen_url ?? '';
+
+  mensajeError = '';
+  mensajeExito = '';
+}
+
+function seleccionarImagenEdicion(event) {
+  const archivo = event.currentTarget.files?.[0];
+
+  archivoEdicion = null;
+  vistaPreviaEdicion = '';
+
+  if (!archivo) return;
+
+  if (!archivo.type.startsWith('image/')) {
+    mensajeError = 'Selecciona una imagen válida.';
+    event.currentTarget.value = '';
+    return;
+  }
+
+  if (archivo.size > 5 * 1024 * 1024) {
+    mensajeError = 'La imagen no debe superar los 5 MB.';
+    event.currentTarget.value = '';
+    return;
+  }
+
+  mensajeError = '';
+  archivoEdicion = archivo;
+  vistaPreviaEdicion = URL.createObjectURL(archivo);
+}
+
+async function guardarEdicion(event) {
+  event.preventDefault();
+
+  const formulario = event.currentTarget;
+  guardandoEdicion = true;
+  mensajeError = '';
+  mensajeExito = '';
+
+  try {
+    let imagenParaGuardar = imagenEdicion.trim();
+
+    if (archivoEdicion) {
+      const nombreSeguro = archivoEdicion.name.replace(
+        /[^a-zA-Z0-9._-]/g,
+        '-'
+      );
+
+      const rutaImagen =
+        `${crypto.randomUUID()}-${nombreSeguro}`;
+
+      const { error: errorSubida } = await clienteSupabase.storage
+        .from('hoteles')
+        .upload(rutaImagen, archivoEdicion, {
+          contentType: archivoEdicion.type,
+          upsert: false
+        });
+
+      if (errorSubida) {
+        throw new Error('No se pudo subir la nueva fotografía.');
+      }
+
+      const { data: urlPublica } = clienteSupabase.storage
+        .from('hoteles')
+        .getPublicUrl(rutaImagen);
+
+      imagenParaGuardar = urlPublica.publicUrl;
+    }
+
+    const respuesta = await fetch('/api/hoteles', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        id: editandoId,
+        nombre: nombreEdicion,
+        descripcion: descripcionEdicion,
+        direccion: direccionEdicion,
+        ciudad: ciudadEdicion,
+        imagen_url: imagenParaGuardar,
+        precio_desde: precioEdicion
+      })
+    });
+
+    const resultado = await respuesta.json();
+
+    if (!respuesta.ok) {
+      throw new Error(
+        resultado.error || 'No se pudo actualizar el hotel.'
+      );
+    }
+
+    hoteles = hoteles.map((hotel) =>
+      hotel.id === editandoId
+        ? { ...hotel, ...resultado.hotel }
+        : hotel
+    );
+
+    mensajeExito = 'Hotel actualizado correctamente.';
+
+    editandoId = '';
+    archivoEdicion = null;
+    vistaPreviaEdicion = '';
+
+    formulario.reset();
+
+  } catch (error) {
+    console.error('Error al editar hotel:', error);
+    mensajeError = error.message || 'Ocurrió un error al editar.';
+  } finally {
+    guardandoEdicion = false;
+  }
+}
+
+function cancelarEdicion() {
+  editandoId = '';
+  archivoEdicion = null;
+  vistaPreviaEdicion = '';
+  mensajeError = '';
+}
+
 
 </script>
 
@@ -373,14 +578,28 @@ event.currentTarget.reset();
         </form>
         <section class="mt-10 rounded-2xl border border-white/10 bg-[#07122f] p-6">
   <h2 class="text-2xl font-semibold">Hoteles registrados</h2>
+  
+<div class="mb-5">
+  <input
+    type="search"
+    placeholder="Buscar por nombre, ciudad o dirección..."
+    bind:value={busquedaHotel}
+    class="w-full rounded-xl border border-white/10 bg-[#07122f] px-4 py-3 text-white outline-none transition focus:border-fuchsia-500"
+  />
 
-  {#if data.hoteles.length === 0}
-    <p class="mt-4 text-slate-300">
-      Todavía no hay hoteles registrados.
-    </p>
+  <p class="mt-2 text-sm text-gray-400">
+    {hotelesFiltrados.length} hoteles encontrados
+  </p>
+</div>
+
+
+    {#if hotelesFiltrados.length === 0}
+  <p class="text-gray-400">
+    No se encontraron hoteles.
+  </p>
   {:else}
     <div class="mt-6 grid gap-4 md:grid-cols-2">
-      {#each data.hoteles as hotel (hotel.id)}
+      {#each hotelesFiltrados as hotel (hotel.id)}
         <article class="rounded-xl border border-white/10 bg-[#030a20] p-5">
         
 
@@ -504,6 +723,146 @@ event.currentTarget.reset();
               Publicar hotel
             {/if}
           </button>
+          <button
+            type="button"
+            onclick={() => abrirEdicion(hotel)}
+             disabled={editandoId !== ''}
+             class="mt-3 w-full rounded-lg border border-fuchsia-400 px-4 py-3 font-semibold text-fuchsia-300 transition hover:bg-fuchsia-500/10 disabled:opacity-50"
+              >
+               Editar hotel
+              </button>
+              
+<button
+  type="button"
+  onclick={() => eliminarHotel(hotel)}
+  disabled={eliminandoId === hotel.id}
+  class="mt-3 w-full rounded-lg border border-red-500 px-4 py-3 font-semibold text-red-400 transition hover:bg-red-500/10 disabled:opacity-50"
+>
+  {eliminandoId === hotel.id
+    ? 'Eliminando...'
+    : 'Eliminar hotel'}
+</button>
+
+              
+{#if editandoId === hotel.id}
+  <form
+    onsubmit={guardarEdicion}
+    class="mt-5 space-y-4 rounded-xl border border-fuchsia-400/30 bg-[#07122f] p-4"
+  >
+    <h3 class="text-lg font-semibold text-fuchsia-300">
+      Editar información del hotel
+    </h3>
+
+    <div>
+      <label for={`nombre-${hotel.id}`} class="mb-2 block text-sm">
+        Nombre del hotel *
+      </label>
+      <input
+        id={`nombre-${hotel.id}`}
+        bind:value={nombreEdicion}
+        required
+        maxlength="150"
+        class="w-full rounded-lg border border-white/15 bg-[#030a20] px-4 py-3 text-white"
+      />
+    </div>
+
+    <div>
+      <label for={`descripcion-${hotel.id}`} class="mb-2 block text-sm">
+        Descripción
+      </label>
+      <textarea
+        id={`descripcion-${hotel.id}`}
+        bind:value={descripcionEdicion}
+        maxlength="5000"
+        rows="3"
+        class="w-full rounded-lg border border-white/15 bg-[#030a20] px-4 py-3 text-white"
+      ></textarea>
+    </div>
+
+    <div>
+      <label for={`direccion-${hotel.id}`} class="mb-2 block text-sm">
+        Dirección *
+      </label>
+      <input
+        id={`direccion-${hotel.id}`}
+        bind:value={direccionEdicion}
+        required
+        maxlength="300"
+        class="w-full rounded-lg border border-white/15 bg-[#030a20] px-4 py-3 text-white"
+      />
+    </div>
+
+    <div>
+      <label for={`ciudad-${hotel.id}`} class="mb-2 block text-sm">
+        Ciudad *
+      </label>
+      <input
+        id={`ciudad-${hotel.id}`}
+        bind:value={ciudadEdicion}
+        required
+        maxlength="100"
+        class="w-full rounded-lg border border-white/15 bg-[#030a20] px-4 py-3 text-white"
+      />
+    </div>
+
+    <div>
+      <label for={`precio-${hotel.id}`} class="mb-2 block text-sm">
+        Precio desde
+      </label>
+      <input
+        id={`precio-${hotel.id}`}
+        type="number"
+        bind:value={precioEdicion}
+        min="0"
+        max="99999999"
+        step="0.01"
+        class="w-full rounded-lg border border-white/15 bg-[#030a20] px-4 py-3 text-white"
+      />
+    </div>
+
+    <div>
+      <label for={`imagen-${hotel.id}`} class="mb-2 block text-sm">
+        Cambiar fotografía
+      </label>
+
+      <input
+        id={`imagen-${hotel.id}`}
+        type="file"
+        accept="image/*"
+        onchange={seleccionarImagenEdicion}
+        class="w-full rounded-lg border border-white/15 bg-[#030a20] px-3 py-3 text-white"
+      />
+
+      {#if vistaPreviaEdicion}
+        <img
+          src={vistaPreviaEdicion}
+          alt="Vista previa del hotel"
+          class="mt-3 h-40 w-full rounded-lg object-cover"
+        />
+      {/if}
+    </div>
+
+    <div class="flex flex-wrap gap-3">
+      <button
+        type="submit"
+        disabled={guardandoEdicion}
+        class="flex-1 rounded-lg bg-gradient-to-r from-[#642bd5] to-[#d82bdc] px-4 py-3 font-semibold disabled:opacity-50"
+      >
+        {guardandoEdicion ? 'Guardando...' : 'Guardar cambios'}
+      </button>
+
+      <button
+        type="button"
+        onclick={cancelarEdicion}
+        disabled={guardandoEdicion}
+        class="flex-1 rounded-lg border border-white/20 px-4 py-3 font-semibold hover:bg-white/5"
+      >
+        Cancelar
+      </button>
+    </div>
+  </form>
+{/if}
+
         </article>
       {/each}
     </div>

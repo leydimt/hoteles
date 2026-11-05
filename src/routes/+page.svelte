@@ -5,6 +5,9 @@
   let hoteles = $state([]);
   let cargando = $state(true);
   let mensajeError = $state('');
+  let usuarioActual = $state(null);
+let favoritos = $state([]);
+let procesandoFavorito = $state(null);
   let busqueda = $state('');
   let hotelesFiltrados = $derived(
   hoteles.filter((hotel) => {
@@ -19,6 +22,23 @@
 );
 
   onMount(async () => {
+  const { data: sesionData } = await clienteSupabase.auth.getUser();
+
+usuarioActual = sesionData.user?.id ?? null;
+
+if (usuarioActual) {
+  const { data: favoritosData, error: errorFavoritos } =
+    await clienteSupabase
+      .from('favoritos')
+      .select('hotel_id')
+      .eq('usuario_id', usuarioActual);
+
+  if (errorFavoritos) {
+    console.error('Error al cargar favoritos:', errorFavoritos.message);
+  } else {
+    favoritos = (favoritosData ?? []).map((item) => item.hotel_id);
+  }
+}
     const { data, error } = await clienteSupabase
       .from('hoteles')
       .select(
@@ -28,14 +48,93 @@
       .order('creado_en', { ascending: false });
 
     if (error) {
-      mensajeError = 'No se pudieron cargar los hoteles.';
-      console.error('Error al consultar hoteles:', error.message);
-    } else {
-      hoteles = data ?? [];
+  mensajeError = 'No se pudieron cargar los hoteles.';
+  console.error('Error al consultar hoteles:', error.message);
+} else {
+  const listaHoteles = data ?? [];
+
+  if (listaHoteles.length > 0) {
+    const idsHoteles = listaHoteles.map((hotel) => hotel.id);
+
+    const { data: calificaciones, error: errorCalificaciones } =
+      await clienteSupabase
+        .from('comentarios')
+        .select('hotel_id, calificacion')
+        .in('hotel_id', idsHoteles)
+        .not('calificacion', 'is', null);
+
+    if (errorCalificaciones) {
+      console.error(
+        'Error al consultar calificaciones:',
+        errorCalificaciones.message
+      );
     }
+
+    hoteles = listaHoteles.map((hotel) => {
+      const opiniones = (calificaciones ?? []).filter(
+        (item) => item.hotel_id === hotel.id
+      );
+
+      const promedio = opiniones.length > 0
+        ? opiniones.reduce(
+            (total, item) => total + item.calificacion,
+            0
+          ) / opiniones.length
+        : 0;
+
+      return {
+        ...hotel,
+        promedio_calificacion: promedio,
+        cantidad_calificaciones: opiniones.length
+      };
+    });
+  } else {
+    hoteles = [];
+  }
+}
 
     cargando = false;
   });
+  async function alternarFavorito(hotel) {
+  if (!usuarioActual) {
+    window.location.href = '/login';
+    return;
+  }
+
+  if (procesandoFavorito === hotel.id) return;
+
+  procesandoFavorito = hotel.id;
+
+  try {
+    if (favoritos.includes(hotel.id)) {
+      const { error } = await clienteSupabase
+        .from('favoritos')
+        .delete()
+        .eq('usuario_id', usuarioActual)
+        .eq('hotel_id', hotel.id);
+
+      if (error) throw error;
+
+      favoritos = favoritos.filter((id) => id !== hotel.id);
+    } else {
+      const { error } = await clienteSupabase
+        .from('favoritos')
+        .insert({
+          usuario_id: usuarioActual,
+          hotel_id: hotel.id
+        });
+
+      if (error) throw error;
+
+      favoritos = [...favoritos, hotel.id];
+    }
+  } catch (error) {
+    console.error('Error al actualizar favorito:', error);
+    alert(error.message || 'No se pudo actualizar el favorito.');
+  } finally {
+    procesandoFavorito = null;
+  }
+}
 </script>
 
 <svelte:head>
@@ -66,6 +165,10 @@
     Nosotros
   </a>
 
+  <a href="/favoritos" class="hover:text-fuchsia-400"> 
+  ❤️ Favoritos
+  </a>
+
   <a
     href="/login"
     class="rounded-lg border border-fuchsia-400 px-4 py-2 hover:bg-fuchsia-500/10"
@@ -87,6 +190,14 @@
     Administración
   </a>
 </div>
+<a href="/perfil"
+ class="text-white transition">
+  Mi perfil
+</a>
+<a href="/hoteles-cercanos"
+class=" text-white transition" >
+  📍 Hoteles cercanos
+</a>
 
   </nav>
 </header>
@@ -188,6 +299,50 @@
 
             <div class="p-5">
               <h3 class="text-xl font-bold">{hotel.nombre}</h3>
+              <button
+  type="button"
+  onclick={() => alternarFavorito(hotel)}
+  disabled={procesandoFavorito === hotel.id}
+  aria-label={favoritos.includes(hotel.id)
+    ? 'Quitar de favoritos'
+    : 'Agregar a favoritos'}
+  aria-pressed={favoritos.includes(hotel.id)}
+  class="mt-3 rounded-lg border border-fuchsia-400/30 px-4 py-2 text-sm font-semibold transition hover:bg-fuchsia-500/10 disabled:opacity-50"
+>
+  {favoritos.includes(hotel.id) ? '❤️ En favoritos' : '🤍 Agregar a favoritos'}
+</button>
+              {#if hotel.cantidad_calificaciones > 0}
+  <div class="mt-2">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="font-bold text-yellow-400">
+        ⭐ {hotel.promedio_calificacion.toFixed(1)}/5
+      </span>
+
+      <div class="flex text-lg text-yellow-400">
+        {#each [1, 2, 3, 4, 5] as estrella}
+          <span
+            class:text-slate-600={
+              estrella > Math.round(hotel.promedio_calificacion)
+            }
+          >
+            ★
+          </span>
+        {/each}
+      </div>
+    </div>
+
+    <p class="mt-1 text-xs text-slate-400">
+      {hotel.cantidad_calificaciones}
+      {hotel.cantidad_calificaciones === 1
+        ? 'opinión'
+        : 'opiniones'}
+    </p>
+  </div>
+{:else}
+  <p class="mt-2 text-sm text-slate-400">
+    Todavía sin calificaciones
+  </p>
+{/if}
 
               <p class="mt-2 text-sm text-slate-400">
                 {hotel.direccion || hotel.ciudad}
